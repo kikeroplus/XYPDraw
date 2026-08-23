@@ -240,7 +240,7 @@ class XYPDrawApp:
         add_float("target_long_side_mm", "出力サイズ長辺(mm)", 200.0)
         add_float("origin_offset_x_mm", "原点オフセットX(mm)", 0.0)
         add_float("origin_offset_y_mm", "原点オフセットY(mm)", 0.0)
-        add_float("simplify_tolerance_mm", "単純化許容誤差(mm, 0=無効)", 0.0)
+        add_float("simplify_tolerance_mm", "単純化許容誤差(mm, 0=無効)", 0.1)
         add_float("pen_width_mm", "プレビュー線幅(mm)", 0.3)
         add_bool("show_travel", "ペンアップ移動線を表示", False)
 

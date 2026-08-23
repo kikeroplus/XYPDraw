@@ -63,8 +63,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--simplify-tolerance-mm",
         type=float,
-        default=None,
-        help="指定するとポリラインをこの許容誤差(mm)でDouglas-Peucker単純化する(高速描画モード)",
+        default=0.1,
+        help=(
+            "ポリラインをこの許容誤差(mm)でDouglas-Peucker単純化する(既定0.1mm)。"
+            "XDoG/ハッチングの点列は1px単位の極短セグメントが連続するため、間引かないと"
+            "GRBLの加減速プランナーが追従できず描画が震える。0を指定すると単純化を無効化する"
+        ),
     )
     parser.add_argument("--pen-width-mm", type=float, default=0.3, help="プレビュー用ペン幅(mm)")
     parser.add_argument("--show-travel", action="store_true", help="プレビューにペンアップ移動線(赤点線)を表示する")
@@ -121,7 +125,7 @@ def main(argv: list[str] | None = None) -> None:
         hatching_config=_build_hatching_config(args),
         target_long_side_mm=args.target_long_side_mm,
         origin_offset_mm=tuple(args.origin_offset_mm),
-        simplify_tolerance_mm=args.simplify_tolerance_mm,
+        simplify_tolerance_mm=args.simplify_tolerance_mm if args.simplify_tolerance_mm > 0 else None,
     )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

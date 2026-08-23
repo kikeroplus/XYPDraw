@@ -9,6 +9,7 @@ venv/
 # 実行時に生成される出力物・ローカル設定（機体固有・再生成可能なため追跡しない）
 output/
 .xypdraw_gui_settings.json
+xypdraw_plotter_settings.json
 
 # PyInstaller ビルド成果物(*.specは手動管理する設定ファイルなので追跡する)
 build/

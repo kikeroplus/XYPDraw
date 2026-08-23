@@ -53,7 +53,13 @@ class XYPDrawConfig:
     # ---- 出力 ----
     target_long_side_mm: float = 200.0  # プロッター上での出力サイズ(長辺mm)
     origin_offset_mm: tuple[float, float] = (0.0, 0.0)
-    simplify_tolerance_mm: float | None = None  # 既定None=間引きなし
+    # 既定0.1mm。XDoGスケルトンやハッチングの点列は1px単位(0.1mm前後)の
+    # 極短セグメントが大量に連なるため、間引かずにそのままG-code化すると
+    # GRBLの加減速プランナーが目標速度に到達できないまま減速を繰り返し、
+    # 「震えながらゆっくり動く」という実描画不具合につながる。ペン先の
+    # 太さより十分小さいこの許容誤差なら見た目の劣化はほぼ無いため、
+    # 単純化なし(None)は明示的に指定する場合のみとする。
+    simplify_tolerance_mm: float | None = 0.1
 
 
 @dataclass
