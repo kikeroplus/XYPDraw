@@ -126,6 +126,26 @@ class PlotterPanel(tk.Toplevel):
             pass  # 設定保存の失敗はウィンドウ終了を妨げない
 
     def _on_close(self) -> None:
+        """ウィンドウを閉じるボタン(×)では接続を切断せず、非表示にするだけに留める。
+
+        プロッターへの接続はゼロ点設定(G92)によって「作業原点(0,0,0)」という
+        座標系の意味を持つ。ウィンドウを閉じるたびに接続も切ってしまうと、
+        次にパネルを開くたびにゼロ点設定からやり直す必要が生じるため、
+        ウィンドウの表示/非表示と接続のライフサイクルを分離する。実際に
+        シリアルポートを解放するのは、明示的な「接続」ボタンでの切断、
+        またはアプリ終了時のshutdown()のみ。
+        """
+        self._save_settings()
+        self.withdraw()
+
+    def show(self) -> None:
+        """非表示にしていたウィンドウを再表示する(接続・座標系はそのまま維持される)。"""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def shutdown(self) -> None:
+        """アプリケーション終了時に呼ぶ。実際に接続を閉じてウィンドウを破棄する。"""
         self._save_settings()
         if self.conn is not None:
             try:

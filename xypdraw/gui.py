@@ -89,6 +89,8 @@ class XYPDrawApp:
 
     def _on_close(self) -> None:
         self._save_settings()
+        if self._plotter_panel is not None and self._plotter_panel.winfo_exists():
+            self._plotter_panel.shutdown()
         self.root.destroy()
 
     # ---- デフォルト値へのリセット ----
@@ -466,9 +468,10 @@ class XYPDrawApp:
     def _on_open_plotter_panel(self) -> None:
         # job自体ではなくcallback経由で渡すことで、パネルを開いたままメイン側で
         # パラメータを変えて再生成しても、送信時には常に最新のjobが使われる。
+        # 既存パネルがあれば(ウィンドウを閉じていても)再利用して表示するだけに
+        # とどめ、接続・ゼロ点設定(座標系)を維持したまま呼び出せるようにする。
         if self._plotter_panel is not None and self._plotter_panel.winfo_exists():
-            self._plotter_panel.lift()
-            self._plotter_panel.focus_force()
+            self._plotter_panel.show()
             return
         self._plotter_panel = PlotterPanel(self.root, get_job=lambda: self.result.job if self.result else None)
 
