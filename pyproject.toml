@@ -19,6 +19,7 @@ dependencies = [
 preview = ["matplotlib>=3.7"]
 dev = ["pytest>=7.4"]
 gui = ["tkinterdnd2>=0.3.0"]
+hardware = ["pyserial>=3.5"]
 
 [tool.setuptools.packages.find]
 include = ["xypdraw*"]

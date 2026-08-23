@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas = []
 binaries = []
-hiddenimports = []
+hiddenimports = ['serial', 'serial.tools.list_ports']
 hiddenimports += collect_submodules('scipy')
 
 for pkg in ('skimage', 'cv2', 'matplotlib', 'tkinterdnd2', 'PIL'):

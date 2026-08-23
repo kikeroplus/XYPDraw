@@ -28,6 +28,7 @@ except ImportError:  # ドラッグ&ドロップは任意機能。未インス�
 from .gcode_export import export_gcode
 from .hatching import HatchingConfig
 from .pen_control import GpioPenController, PenController, ServoAnglePenController, ZAxisPenController
+from .plotter_panel import PlotterPanel
 from .pipeline import PipelineResult, XYPDrawConfig, process_image
 from .svg_export import export_svg
 from .types import PlotJob
@@ -61,6 +62,7 @@ class XYPDrawApp:
         self.image_path: str | None = None
         self.result: PipelineResult | None = None
         self._worker_queue: queue.Queue = queue.Queue()
+        self._plotter_panel: PlotterPanel | None = None
 
         settings = self._load_settings()
         self.vars: dict[str, tk.Variable] = {}
@@ -282,6 +284,9 @@ class XYPDrawApp:
         self.generate_btn.pack(side=tk.LEFT, padx=4)
         ttk.Button(bottom, text="SVG保存", command=self._on_save_svg).pack(side=tk.LEFT, padx=4)
         ttk.Button(bottom, text="G-code保存", command=self._on_save_gcode).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="プロッターへ送信...", command=self._on_open_plotter_panel).pack(
+            side=tk.LEFT, padx=4
+        )
         self.status_var = tk.StringVar(value="画像を選択して「線画生成」を押してください。")
         ttk.Label(bottom, textvariable=self.status_var).pack(side=tk.LEFT, padx=12)
 
@@ -456,6 +461,16 @@ class XYPDrawApp:
             travel_feed_rate=self.vars["travel_feed_rate"].get(),
         )
         self.status_var.set(f"G-codeを保存しました: {path}")
+
+    # ---- プロッター送信 ----
+    def _on_open_plotter_panel(self) -> None:
+        # job自体ではなくcallback経由で渡すことで、パネルを開いたままメイン側で
+        # パラメータを変えて再生成しても、送信時には常に最新のjobが使われる。
+        if self._plotter_panel is not None and self._plotter_panel.winfo_exists():
+            self._plotter_panel.lift()
+            self._plotter_panel.focus_force()
+            return
+        self._plotter_panel = PlotterPanel(self.root, get_job=lambda: self.result.job if self.result else None)
 
 
 def main() -> None:
