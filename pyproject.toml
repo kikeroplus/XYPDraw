@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xypdraw"
+version = "0.1.0"
+description = "JPG画像 -> 線画(XDoG+ハッチング) -> G-code 変換パイプライン"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow>=10.0",
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-image>=0.21",
+]
+
+[project.optional-dependencies]
+preview = ["matplotlib>=3.7"]
+dev = ["pytest>=7.4"]
+gui = ["tkinterdnd2>=0.3.0"]
+
+[tool.setuptools.packages.find]
+include = ["xypdraw*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
