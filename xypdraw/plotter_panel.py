@@ -592,11 +592,11 @@ class PlotterPanel(tk.Toplevel):
             if parsed.get("machine_position") is not None:
                 self.last_wco = parsed["machine_position"]
 
-            total = len(lines)
-            for i, line in enumerate(lines):
-                conn.send_line(line)
-                self.job_status_var.set(f"外周確認送信中... {i + 1}/{total}")
+            def on_progress(done: int, total: int, resp: str) -> None:
+                self.job_status_var.set(f"外周確認送信中... {done}/{total}")
                 self.update_idletasks()
+
+            conn.stream(lines, on_progress=on_progress)
             self.job_status_var.set("外周確認 完了。X+が右、Y-が下に動いたか確認してください。")
         except GrblError as e:
             messagebox.showerror("GRBLエラー", str(e))
@@ -666,7 +666,7 @@ class PlotterPanel(tk.Toplevel):
         self.cancel_btn.config(state="normal")
 
         def worker() -> None:
-            cancelled_at: int | None = None
+            total = len(lines)
             completed = False
             try:
                 conn.zero_work_origin()
@@ -674,18 +674,15 @@ class PlotterPanel(tk.Toplevel):
                 if parsed.get("machine_position") is not None:
                     self.last_wco = parsed["machine_position"]
 
-                total = len(lines)
-                for i, line in enumerate(lines):
-                    if cancel_event.is_set():
-                        cancelled_at = i
-                        break
-                    conn.send_line(line)
-                    if i % 10 == 0:
-                        self.after(0, lambda i=i: self.job_status_var.set(f"送信中... {i + 1}/{total}"))
+                def on_progress(done: int, total: int, resp: str) -> None:
+                    if done % 10 == 0 or done == total:
+                        self.after(0, lambda done=done: self.job_status_var.set(f"送信中... {done}/{total}"))
 
-                if cancelled_at is not None:
+                sent = conn.stream(lines, on_progress=on_progress, is_cancelled=cancel_event.is_set)
+
+                if sent < total:
                     msg = (
-                        f"キャンセルしました({cancelled_at}/{total}行送信済み、フィードホールド中)。"
+                        f"キャンセルしました({sent}/{total}行送信済み、フィードホールド中)。"
                         "「再開」で続行するか「ソフトリセット」で完全停止してください。"
                     )
                     self.after(0, lambda: self.job_status_var.set(msg))

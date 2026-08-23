@@ -4,15 +4,20 @@
 すべて無効なため、GRBL自身は移動範囲の逸脱を検知できない。そのため
 送信前にソフトウェア側で座標範囲をチェックする(check_xy_bounds)。
 
-送信プロトコルは「1行送信 -> 'ok'/'error'応答待ち」という単純な同期方式。
-GRBLの文字カウント方式ストリーミングより低速だが、実装が単純で確実。
+複数行の送信(stream)はGRBL Wikiで説明されている文字カウント方式を使う。
+GRBLの受信バッファを可能な限り先行して埋めておくことで、シリアル通信の
+往復時間がボトルネックになって動きが止まる(実機上は「カクカクした
+動き」として現れる)のを防ぐ。単発コマンド(send_line)は従来通り
+1行送信->'ok'/'error'応答待ちの単純な同期方式。
 
-XYPWriter (xypwriter/grbl_sender.py) から移植した実装。
+XYPWriter (xypwriter/grbl_sender.py) から移植した実装(streamは文字
+カウント方式に書き直している)。
 """
 from __future__ import annotations
 
 import re
 import time
+from typing import Callable
 
 from .types import PlotJob
 
@@ -113,8 +118,8 @@ class GrblConnection:
         """
         return self.send_line("G92 X0 Y0 Z0")
 
-    def send_line(self, line: str) -> str:
-        """1行送信し、'ok'または'error:'応答が返るまでブロックする。
+    def _read_response(self) -> str:
+        """1件の応答が返るまでブロックする。'ok'ならそれを返し、'error:'/'ALARM:'ならGrblErrorを送出する。
 
         GRBLの'ok'は「行を受理してプランナーバッファに積んだ」ことを意味し、
         バッファ(15ブロック程度)が一杯の間は、実行が進んで空きができるまで
@@ -122,32 +127,37 @@ class GrblConnection:
         readline()タイムアウト(self.timeout)だけで即エラーにはせず、
         合計response_timeout秒に達するまでは無応答をリトライ扱いにする。
         """
-        assert self._ser is not None, "connect()を先に呼んでください"
-        payload = line.strip()
-        if not payload:
-            return ""
-        self._ser.write((payload + "\n").encode())
+        assert self._ser is not None
         elapsed = 0.0
         while True:
             raw = self._ser.readline()
             if not raw:
                 elapsed += self.timeout
                 if elapsed >= self.response_timeout:
-                    raise GrblError(
-                        f"応答タイムアウト({self.response_timeout:.0f}秒): "
-                        f"送信行 '{payload}' に対する応答がありません"
-                    )
+                    raise GrblError(f"応答タイムアウト({self.response_timeout:.0f}秒): 応答がありません")
                 continue
             resp = raw.decode(errors="replace").strip()
             if not resp:
                 continue
             if resp.startswith("error:"):
-                raise GrblError(f"'{payload}' -> {resp}")
+                raise GrblError(resp)
             if resp.startswith("ALARM:"):
-                raise GrblError(f"'{payload}' -> {resp} (アラーム状態。$Xで解除してから再開してください)")
+                raise GrblError(f"{resp} (アラーム状態。$Xで解除してから再開してください)")
             if resp == "ok":
                 return resp
             # 起動メッセージや[MSG:...]等の情報行は無視して待ち続ける
+
+    def send_line(self, line: str) -> str:
+        """1行送信し、'ok'または'error:'応答が返るまでブロックする。"""
+        assert self._ser is not None, "connect()を先に呼んでください"
+        payload = line.strip()
+        if not payload:
+            return ""
+        self._ser.write((payload + "\n").encode())
+        try:
+            return self._read_response()
+        except GrblError as e:
+            raise GrblError(f"'{payload}' -> {e}") from e
 
     def feed_hold(self) -> None:
         """リアルタイムコマンド '!' で送り速度を保持(一時停止)する。"""
@@ -166,12 +176,72 @@ class GrblConnection:
         time.sleep(1.0)
         self._ser.reset_input_buffer()
 
-    def stream(self, lines: list[str], on_progress=None) -> None:
-        """複数行を順番に送信する。エラーが出た時点で例外を送出して停止する。"""
-        for i, line in enumerate(lines):
-            resp = self.send_line(line)
+    def stream(
+        self,
+        lines: list[str],
+        on_progress: Callable[[int, int, str], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> int:
+        """GRBL Wikiの"Streaming a G-Code Program"で説明されている文字カウント
+        方式でストリーミング送信する。
+
+        1行送信してから'ok'応答を待つ、を繰り返す同期方式(send_lineの単純な
+        ループ)は、GRBL側のプランナーバッファ(15ブロック程度)を先行して
+        埋められないため、シリアル通信の往復時間(GRBL側の処理時間・
+        USB-シリアル変換の遅延等)がボトルネックになりやすい。往復のたびに
+        バッファが枯渇して動きが止まり、次の応答到達で再開する、を繰り返すと
+        実機上は「カクカクした動き」として現れる。
+
+        この実装はGRBLの受信バッファ(既定128バイト)を可能な限り埋めた状態を
+        保ちながら複数行を先行送信することでこれを回避する。送信済みだが
+        まだ'ok'/'error'が返っていない行の文字数合計をpending_lensで追跡し、
+        次の行を送るとバッファ容量を超える場合だけ応答を待つ。
+
+        Args:
+            lines: 送信するG-code行のリスト。
+            on_progress: (完了行数, 総行数, 直前の応答)を受け取るcallback。
+            is_cancelled: 呼ぶとTrue/Falseを返すcallback。Trueになったら
+                新規行の送信を止め、送信済み(未確認)の行への応答だけ
+                待ってから戻る(既に送った行の実行自体は止められないため、
+                呼び出し側が別途feed_hold()等で安全に一時停止させること)。
+
+        Returns:
+            実際に送信した行数(キャンセルされた場合はlen(lines)未満)。
+        """
+        assert self._ser is not None, "connect()を先に呼んでください"
+        rx_buffer_capacity = 100  # GRBL既定のRX_BUFFER_SIZE(128)に安全マージンを取った値
+        pending_lens: list[int] = []  # 送信済み・未確認の各行の文字数(改行込み)
+        next_idx = 0
+        completed = 0
+        total = len(lines)
+        cancelled = False
+
+        while next_idx < total or pending_lens:
+            if not cancelled and is_cancelled is not None and is_cancelled():
+                cancelled = True
+
+            while (not cancelled) and next_idx < total:
+                payload = lines[next_idx].strip()
+                if not payload:
+                    next_idx += 1
+                    continue
+                encoded_len = len(payload) + 1  # 改行分
+                if pending_lens and sum(pending_lens) + encoded_len > rx_buffer_capacity:
+                    break
+                self._ser.write((payload + "\n").encode())
+                pending_lens.append(encoded_len)
+                next_idx += 1
+
+            if not pending_lens:
+                break  # キャンセル済みで、送信すべき行も残っていない
+
+            resp = self._read_response()
+            pending_lens.pop(0)
+            completed += 1
             if on_progress is not None:
-                on_progress(i, len(lines), line, resp)
+                on_progress(completed, total, resp)
+
+        return completed
 
     def close(self) -> None:
         if self._ser is not None:
