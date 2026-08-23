@@ -12,10 +12,10 @@ import numpy as np
 
 def xdog(
     gray: np.ndarray,
-    sigma: float = 0.8,
+    sigma: float = 2.0,
     k: float = 1.6,
     tau: float = 0.98,
-    epsilon: float = -0.01,
+    epsilon: float = -0.0001,
     phi: float = 200.0,
 ) -> np.ndarray:
     """XDoGを適用し、[0, 1]の連続値画像(1.0=白/背景、0に近いほど線)を返す。
@@ -41,12 +41,12 @@ def xdog(
 
 def xdog_binary(
     gray: np.ndarray,
-    sigma: float = 0.8,
+    sigma: float = 2.0,
     k: float = 1.6,
     tau: float = 0.98,
-    epsilon: float = -0.01,
+    epsilon: float = -0.0001,
     phi: float = 200.0,
-    threshold: float = 0.5,
+    threshold: float = 1.0,
 ) -> np.ndarray:
     """XDoG出力をしきい値で二値化する。True=線(インク)。"""
     soft = xdog(gray, sigma=sigma, k=k, tau=tau, epsilon=epsilon, phi=phi)

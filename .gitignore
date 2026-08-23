@@ -10,7 +10,6 @@ venv/
 output/
 .xypdraw_gui_settings.json
 
-# PyInstaller ビルド成果物
+# PyInstaller ビルド成果物(*.specは手動管理する設定ファイルなので追跡する)
 build/
 dist/
-*.spec

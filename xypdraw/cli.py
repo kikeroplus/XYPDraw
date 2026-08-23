@@ -31,13 +31,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bilateral-sigma-space", type=float, default=50.0, help="バイラテラルフィルタの空間シグマ")
     parser.add_argument("--clahe-clip-limit", type=float, default=2.0, help="CLAHEのコントラスト強調上限")
     # XDoG
-    parser.add_argument("--xdog-sigma", type=float, default=1.2, help="XDoG基準ガウシアンの標準偏差(px)")
+    parser.add_argument("--xdog-sigma", type=float, default=2.0, help="XDoG基準ガウシアンの標準偏差(px)")
     parser.add_argument("--xdog-k", type=float, default=1.6, help="XDoG第2ガウシアンのsigma倍率")
     parser.add_argument("--xdog-tau", type=float, default=0.98, help="XDoGのDoG減算係数(小さいほど線が太くなる)")
-    parser.add_argument("--xdog-epsilon", type=float, default=-0.01, help="XDoGソフト閾値化の閾値")
+    parser.add_argument("--xdog-epsilon", type=float, default=-0.0001, help="XDoGソフト閾値化の閾値")
     parser.add_argument("--xdog-phi", type=float, default=200.0, help="XDoGソフト閾値化の急峻さ")
-    parser.add_argument("--xdog-threshold", type=float, default=0.5, help="XDoG出力の二値化しきい値(0-1)")
-    parser.add_argument("--min-object-size-px", type=int, default=4, help="ノイズとみなす最小連結成分サイズ(px)")
+    parser.add_argument("--xdog-threshold", type=float, default=1.0, help="XDoG出力の二値化しきい値(0-1)")
+    parser.add_argument("--min-object-size-px", type=int, default=1, help="ノイズとみなす最小連結成分サイズ(px)")
     parser.add_argument("--spur-factor", type=float, default=1.4, help="スパー(ヒゲ)除去のストローク幅倍率")
     parser.add_argument("--merge-factor", type=float, default=0.85, help="交差点集約半径のストローク幅倍率")
     # ハッチング

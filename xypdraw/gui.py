@@ -18,6 +18,13 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+
+    _DND_AVAILABLE = True
+except ImportError:  # ドラッグ&ドロップは任意機能。未インストールでも通常のTkウィンドウで動く。
+    _DND_AVAILABLE = False
+
 from .gcode_export import export_gcode
 from .hatching import HatchingConfig
 from .pen_control import GpioPenController, PenController, ServoAnglePenController, ZAxisPenController
@@ -27,6 +34,7 @@ from .types import PlotJob
 
 _JP_FONT_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP"]
 _SETTINGS_PATH = Path.home() / ".xypdraw_gui_settings.json"
+_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
 def _configure_japanese_font() -> None:
@@ -41,7 +49,14 @@ class XYPDrawApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("XYPDraw - JPG線画プロッターツール")
-        self.root.geometry("1200x800")
+        # タスクバー等を考慮した余白を差し引き、画面より大きくならないように
+        # 初期ウィンドウサイズを実ディスプレイに合わせてクランプする。
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w = min(1200, screen_w - 80)
+        win_h = min(800, screen_h - 120)
+        self.root.geometry(f"{win_w}x{win_h}")
+        self.root.minsize(700, 400)
 
         self.image_path: str | None = None
         self.result: PipelineResult | None = None
@@ -49,6 +64,7 @@ class XYPDrawApp:
 
         settings = self._load_settings()
         self.vars: dict[str, tk.Variable] = {}
+        self.defaults: dict[str, object] = {}
         self._build_ui(settings)
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -73,21 +89,33 @@ class XYPDrawApp:
         self._save_settings()
         self.root.destroy()
 
+    # ---- デフォルト値へのリセット ----
+    def _reset_param(self, key: str) -> None:
+        if key in self.defaults:
+            self.vars[key].set(self.defaults[key])
+
+    def _reset_all_params(self) -> None:
+        for key, default in self.defaults.items():
+            self.vars[key].set(default)
+
     # ---- UI構築 ----
     def _build_ui(self, s: dict) -> None:
         _configure_japanese_font()
 
         top = ttk.Frame(self.root, padding=8)
         top.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(top, text="画像ファイル:").pack(side=tk.LEFT)
+        drop_hint = "(画像をドラッグ&ドロップも可)" if _DND_AVAILABLE else ""
+        ttk.Label(top, text=f"画像ファイル: {drop_hint}").pack(side=tk.LEFT)
         self.path_var = tk.StringVar(value=s.get("path", ""))
-        ttk.Entry(top, textvariable=self.path_var, width=70).pack(side=tk.LEFT, padx=4)
+        path_entry = ttk.Entry(top, textvariable=self.path_var, width=70)
+        path_entry.pack(side=tk.LEFT, padx=4)
         ttk.Button(top, text="参照...", command=self._browse_image).pack(side=tk.LEFT, padx=4)
+        self._dnd_targets: list[tk.Widget] = [top, path_entry]
 
         body = ttk.Frame(self.root)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        params_container = ttk.Frame(body, width=340)
+        params_container = ttk.Frame(body, width=400)
         params_container.pack(side=tk.LEFT, fill=tk.Y)
         params_container.pack_propagate(False)
         canvas = tk.Canvas(params_container, borderwidth=0, highlightthickness=0)
@@ -99,29 +127,85 @@ class XYPDrawApp:
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # マウスホイールでスクロールできるようにする(スクロールバーのドラッグだけだと
+        # 項目数が多いパネルでは操作が煩わしいため)。ホバー中だけグローバルに
+        # バインドし、離れたら解除することで、他ウィジェット上のホイール操作と
+        # 競合しないようにする。
+        def _on_mousewheel(event: tk.Event) -> None:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        # 各セクションは「ラベル・入力欄」の組を横に2組並べる4カラムグリッド
+        # (ラベル列, 入力欄列, ラベル列, 入力欄列)にして、項目数が多くても
+        # 縦の長さを抑える。ラベル列の幅はgridが内容(最長ラベル)に応じて
+        # 自動で揃えるため、width指定で日本語ラベルが見切れる問題を避けられる。
+        # add_section呼び出しごとに新しいグリッド・スロット位置カウンタへ
+        # リセットする。
+        section_state: dict[str, object] = {"grid": None, "n": 0}
+
         def add_section(title: str) -> None:
             ttk.Label(params, text=title, font=("", 10, "bold")).pack(anchor="w", pady=(10, 2), padx=6)
+            grid = ttk.Frame(params)
+            grid.pack(fill=tk.X, padx=2)
+            section_state["grid"] = grid
+            section_state["n"] = 0
+
+        def _next_slot() -> tuple[tk.Widget, int, int, int]:
+            grid = section_state["grid"]
+            n = section_state["n"]
+            section_state["n"] = n + 1
+            row, col = divmod(n, 2)
+            return grid, row, col * 2, col * 2 + 1
 
         def add_float(key: str, label: str, default: float) -> None:
+            self.defaults[key] = float(default)
             var = tk.DoubleVar(value=float(s.get(key, default)))
             self.vars[key] = var
-            row = ttk.Frame(params)
-            row.pack(fill=tk.X, padx=6, pady=1)
-            ttk.Label(row, text=label, width=22).pack(side=tk.LEFT)
-            ttk.Entry(row, textvariable=var, width=10).pack(side=tk.LEFT)
+            grid, row, label_col, entry_col = _next_slot()
+            lbl = ttk.Label(grid, text=label, cursor="hand2", font=("", 8))
+            lbl.grid(row=row, column=label_col, sticky="w", padx=(4, 3), pady=2)
+            lbl.bind("<Double-Button-1>", lambda e, k=key: self._reset_param(k))
+            ttk.Entry(grid, textvariable=var, width=8).grid(
+                row=row, column=entry_col, sticky="w", padx=(0, 8), pady=2
+            )
 
         def add_int(key: str, label: str, default: int) -> None:
+            self.defaults[key] = int(default)
             var = tk.IntVar(value=int(s.get(key, default)))
             self.vars[key] = var
-            row = ttk.Frame(params)
-            row.pack(fill=tk.X, padx=6, pady=1)
-            ttk.Label(row, text=label, width=22).pack(side=tk.LEFT)
-            ttk.Entry(row, textvariable=var, width=10).pack(side=tk.LEFT)
+            grid, row, label_col, entry_col = _next_slot()
+            lbl = ttk.Label(grid, text=label, cursor="hand2", font=("", 8))
+            lbl.grid(row=row, column=label_col, sticky="w", padx=(4, 3), pady=2)
+            lbl.bind("<Double-Button-1>", lambda e, k=key: self._reset_param(k))
+            ttk.Entry(grid, textvariable=var, width=8).grid(
+                row=row, column=entry_col, sticky="w", padx=(0, 8), pady=2
+            )
 
         def add_bool(key: str, label: str, default: bool) -> None:
+            self.defaults[key] = bool(default)
             var = tk.BooleanVar(value=bool(s.get(key, default)))
             self.vars[key] = var
-            ttk.Checkbutton(params, text=label, variable=var).pack(anchor="w", padx=6, pady=1)
+            cb = ttk.Checkbutton(params, text=label, variable=var, cursor="hand2")
+            cb.pack(anchor="w", padx=6, pady=1)
+            # チェックボックス自体のダブルクリックは2回トグルされてしまうため、
+            # ハンドラ側でデフォルト値へ明示的に上書きして確実にリセットする。
+            cb.bind("<Double-Button-1>", lambda e, k=key: self._reset_param(k))
+
+        reset_row = ttk.Frame(params)
+        reset_row.pack(fill=tk.X, padx=6, pady=(6, 2))
+        ttk.Button(reset_row, text="すべてデフォルトに戻す", command=self._reset_all_params).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(
+            params,
+            text="(各項目ラベルをダブルクリックでもその項目だけリセットできます)",
+            font=("", 8),
+            foreground="#666666",
+            wraplength=300,
+            justify="left",
+        ).pack(anchor="w", padx=6, pady=(0, 4))
 
         add_section("処理解像度")
         add_int("max_long_side_px", "処理解像度上限(px)", 1600)
@@ -133,13 +217,13 @@ class XYPDrawApp:
         add_float("clahe_clip_limit", "CLAHEコントラスト上限", 2.0)
 
         add_section("XDoG(輪郭)")
-        add_float("xdog_sigma", "sigma", 1.2)
+        add_float("xdog_sigma", "sigma", 2.0)
         add_float("xdog_k", "k", 1.6)
         add_float("xdog_tau", "tau", 0.98)
-        add_float("xdog_epsilon", "epsilon", -0.01)
+        add_float("xdog_epsilon", "epsilon", -0.0001)
         add_float("xdog_phi", "phi", 200.0)
-        add_float("xdog_threshold", "二値化しきい値(0-1)", 0.5)
-        add_int("min_object_size_px", "最小成分サイズ(px)", 4)
+        add_float("xdog_threshold", "二値化しきい値(0-1)", 1.0)
+        add_int("min_object_size_px", "最小成分サイズ(px)", 1)
         add_float("spur_factor", "スパー除去係数", 1.4)
         add_float("merge_factor", "交差点集約係数", 0.85)
 
@@ -159,14 +243,16 @@ class XYPDrawApp:
         add_bool("show_travel", "ペンアップ移動線を表示", False)
 
         add_section("ペン制御(G-code)")
+        self.defaults["pen_mode"] = "z"
         pen_mode_var = tk.StringVar(value=s.get("pen_mode", "z"))
         self.vars["pen_mode"] = pen_mode_var
-        row = ttk.Frame(params)
-        row.pack(fill=tk.X, padx=6, pady=1)
-        ttk.Label(row, text="ペン制御方式", width=22).pack(side=tk.LEFT)
+        pen_mode_grid, pen_mode_row, pen_mode_label_col, pen_mode_entry_col = _next_slot()
+        pen_mode_lbl = ttk.Label(pen_mode_grid, text="ペン制御方式", cursor="hand2", font=("", 8))
+        pen_mode_lbl.grid(row=pen_mode_row, column=pen_mode_label_col, sticky="w", padx=(4, 3), pady=2)
+        pen_mode_lbl.bind("<Double-Button-1>", lambda e: self._reset_param("pen_mode"))
         ttk.Combobox(
-            row, textvariable=pen_mode_var, values=["z", "servo", "gpio"], width=8, state="readonly"
-        ).pack(side=tk.LEFT)
+            pen_mode_grid, textvariable=pen_mode_var, values=["z", "servo", "gpio"], width=6, state="readonly"
+        ).grid(row=pen_mode_row, column=pen_mode_entry_col, sticky="w", padx=(0, 8), pady=2)
         add_float("pen_up_z", "ペンアップZ(mm)", 5.0)
         add_float("pen_down_z", "ペンダウンZ(mm)", 0.0)
         add_float("feed_rate", "描画送り速度", 1500.0)
@@ -180,6 +266,15 @@ class XYPDrawApp:
         self.ax = self.figure.add_subplot(111)
         self.canvas_widget = FigureCanvasTkAgg(self.figure, master=right)
         self.canvas_widget.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self._dnd_targets.extend([right, self.canvas_widget.get_tk_widget()])
+
+        # ドラッグ&ドロップ受け付け(tkinterdnd2が利用可能な場合のみ)。
+        # ファイル選択欄だけでなくプレビュー領域も受け皿にして、ドロップ位置に
+        # 神経質にならずに使えるようにする。
+        if _DND_AVAILABLE:
+            for target in self._dnd_targets:
+                target.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
+                target.dnd_bind("<<Drop>>", self._on_image_drop)  # type: ignore[attr-defined]
 
         bottom = ttk.Frame(self.root, padding=8)
         bottom.pack(side=tk.BOTTOM, fill=tk.X)
@@ -198,6 +293,20 @@ class XYPDrawApp:
         )
         if path:
             self.path_var.set(path)
+
+    def _on_image_drop(self, event: tk.Event) -> None:
+        """ドラッグ&ドロップされたファイル群から画像を1つ選んで設定する。
+
+        event.dataはTclリスト形式(パスにスペースを含む場合は`{...}`で囲まれる)
+        なので、Tkの`splitlist`で正しく分割する。複数ファイルがドロップされた
+        場合は先頭の画像ファイルを使う。
+        """
+        paths = self.root.tk.splitlist(event.data)
+        image_path = next((p for p in paths if p.lower().endswith(_IMAGE_EXTENSIONS)), None)
+        if image_path is None:
+            messagebox.showerror("XYPDraw", "画像ファイル(jpg/jpeg/png/bmp/webp)をドロップしてください")
+            return
+        self.path_var.set(image_path)
 
     # ---- 設定 -> Config ----
     def _current_config(self) -> XYPDrawConfig:
@@ -350,7 +459,7 @@ class XYPDrawApp:
 
 
 def main() -> None:
-    root = tk.Tk()
+    root = TkinterDnD.Tk() if _DND_AVAILABLE else tk.Tk()
     XYPDrawApp(root)
     root.mainloop()
 

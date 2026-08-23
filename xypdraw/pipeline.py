@@ -38,13 +38,13 @@ class XYPDrawConfig:
     bilateral_sigma_space: float = 50.0
     clahe_clip_limit: float = 2.0
     # ---- XDoG(輪郭抽出) ----
-    xdog_sigma: float = 1.2
+    xdog_sigma: float = 2.0
     xdog_k: float = 1.6
     xdog_tau: float = 0.98
-    xdog_epsilon: float = -0.01
+    xdog_epsilon: float = -0.0001
     xdog_phi: float = 200.0
-    xdog_threshold: float = 0.5
-    min_object_size_px: int = 4
+    xdog_threshold: float = 1.0
+    min_object_size_px: int = 1
     spur_factor: float = 1.4
     merge_factor: float = 0.85
     # ---- ハッチング(陰影) ----
