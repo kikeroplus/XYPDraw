@@ -60,6 +60,7 @@ DEFAULT_SETTINGS = {
     "final_lift_mm": 3.0,
     "draw_feed": 5000.0,
     "travel_feed": 5000.0,
+    "release_torque_hold_on_finish": True,
 }
 
 _AXIS_INDEX = {"X": 0, "Y": 1, "Z": 2}
@@ -87,6 +88,9 @@ class PlotterPanel(tk.Toplevel):
         self._last_final_lift_mm: float = 0.0
         self._send_thread: threading.Thread | None = None
         self._cancel_event: threading.Event | None = None
+        # G-code送信中(_set_busy参照)に無効化するウィジェット一覧。フィードホールド/
+        # 再開/ソフトリセットは安全弁として意図的にここへ含めない。
+        self._busy_widgets: list[tk.Widget] = []
         self.settings = self._load_settings()
 
         self._build_ui()
@@ -119,6 +123,7 @@ class PlotterPanel(tk.Toplevel):
                     "final_lift_mm": float(self.final_lift_var.get()),
                     "draw_feed": float(self.draw_feed_var.get()),
                     "travel_feed": float(self.travel_feed_var.get()),
+                    "release_torque_hold_on_finish": bool(self.release_torque_hold_on_finish_var.get()),
                 }
             )
             _SETTINGS_PATH.write_text(json.dumps(self.settings, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -171,6 +176,7 @@ class PlotterPanel(tk.Toplevel):
         self.connect_border.grid(row=0, column=4, padx=4)
         self.connect_btn = ttk.Button(self.connect_border, text="接続", command=self._toggle_connect)
         self.connect_btn.pack(padx=2, pady=2)
+        self._busy_widgets.append(self.connect_btn)
         self.conn_status_var = tk.StringVar(value="未接続")
         ttk.Label(conn_frame, textvariable=self.conn_status_var).grid(row=0, column=5, padx=8)
 
@@ -190,7 +196,9 @@ class PlotterPanel(tk.Toplevel):
         def _zero_button(text: str, axes: str, column: int) -> None:
             border = tk.Frame(zero_frame, bg="#87CEFA")
             border.grid(row=0, column=column, padx=4, pady=4)
-            ttk.Button(border, text=text, command=lambda: self._on_zero(axes)).pack(padx=2, pady=2)
+            btn = ttk.Button(border, text=text, command=lambda: self._on_zero(axes))
+            btn.pack(padx=2, pady=2)
+            self._busy_widgets.append(btn)
 
         _zero_button("X=0", "X", 0)
         _zero_button("Y=0", "Y", 1)
@@ -235,15 +243,18 @@ class PlotterPanel(tk.Toplevel):
 
         nav_frame = ttk.LabelFrame(movement_row, text="ナビゲーション")
         nav_frame.pack(side="left", padx=6, pady=4)
-        ttk.Button(nav_frame, text="Y+", command=lambda: self._on_jog("Y", 1)).grid(row=0, column=1, padx=4, pady=4)
-        ttk.Button(nav_frame, text="X-", command=lambda: self._on_jog("X", -1)).grid(row=1, column=0, padx=4, pady=4)
-        ttk.Button(nav_frame, text="原点(0,0)", command=self._on_return_to_origin).grid(
-            row=1, column=1, padx=4, pady=4
-        )
-        ttk.Button(nav_frame, text="X+", command=lambda: self._on_jog("X", 1)).grid(row=1, column=2, padx=4, pady=4)
-        ttk.Button(nav_frame, text="Y-", command=lambda: self._on_jog("Y", -1)).grid(row=2, column=1, padx=4, pady=4)
-        ttk.Button(nav_frame, text="Z+", command=lambda: self._on_jog("Z", 1)).grid(row=0, column=3, padx=4, pady=4)
-        ttk.Button(nav_frame, text="Z-", command=lambda: self._on_jog("Z", -1)).grid(row=2, column=3, padx=4, pady=4)
+        def _nav_button(text: str, row: int, column: int, command) -> None:
+            btn = ttk.Button(nav_frame, text=text, command=command)
+            btn.grid(row=row, column=column, padx=4, pady=4)
+            self._busy_widgets.append(btn)
+
+        _nav_button("Y+", 0, 1, lambda: self._on_jog("Y", 1))
+        _nav_button("X-", 1, 0, lambda: self._on_jog("X", -1))
+        _nav_button("原点(0,0)", 1, 1, self._on_return_to_origin)
+        _nav_button("X+", 1, 2, lambda: self._on_jog("X", 1))
+        _nav_button("Y-", 2, 1, lambda: self._on_jog("Y", -1))
+        _nav_button("Z+", 0, 3, lambda: self._on_jog("Z", 1))
+        _nav_button("Z-", 2, 3, lambda: self._on_jog("Z", -1))
 
         safety_frame = ttk.LabelFrame(self, text="安全操作")
         safety_frame.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
@@ -254,24 +265,35 @@ class PlotterPanel(tk.Toplevel):
         ttk.Button(safety_frame, text="ソフトリセット", command=self._on_soft_reset).grid(
             row=0, column=2, padx=4, pady=4
         )
-        ttk.Button(safety_frame, text="アラーム解除($X)", command=self._on_unlock).grid(
-            row=0, column=3, padx=4, pady=4
-        )
+        self.unlock_btn = ttk.Button(safety_frame, text="アラーム解除($X)", command=self._on_unlock)
+        self.unlock_btn.grid(row=0, column=3, padx=4, pady=4)
+        self._busy_widgets.append(self.unlock_btn)
         ttk.Label(safety_frame, text="コマンド送信").grid(row=1, column=0, padx=4, pady=(0, 4), sticky="e")
         self.raw_cmd_var = tk.StringVar(value="")
         raw_cmd_entry = ttk.Entry(safety_frame, textvariable=self.raw_cmd_var, width=20)
         raw_cmd_entry.grid(row=1, column=1, columnspan=2, padx=4, pady=(0, 4), sticky="ew")
         raw_cmd_entry.bind("<Return>", lambda _e: self._on_send_raw_command())
-        ttk.Button(safety_frame, text="送信", command=self._on_send_raw_command).grid(
-            row=1, column=3, padx=4, pady=(0, 4)
-        )
+        self._busy_widgets.append(raw_cmd_entry)
+        self.send_raw_btn = ttk.Button(safety_frame, text="送信", command=self._on_send_raw_command)
+        self.send_raw_btn.grid(row=1, column=3, padx=4, pady=(0, 4))
+        self._busy_widgets.append(self.send_raw_btn)
         self.torque_hold_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        self.torque_hold_check = ttk.Checkbutton(
             safety_frame,
             text="トルク保持(全軸, $1=255)",
             variable=self.torque_hold_var,
             command=self._on_toggle_torque_hold,
-        ).grid(row=1, column=4, padx=(12, 4), pady=(0, 4), sticky="w")
+        )
+        self.torque_hold_check.grid(row=1, column=4, padx=(12, 4), pady=(0, 4), sticky="w")
+        self._busy_widgets.append(self.torque_hold_check)
+        self.release_torque_hold_on_finish_var = tk.BooleanVar(
+            value=bool(s.get("release_torque_hold_on_finish", True))
+        )
+        ttk.Checkbutton(
+            safety_frame,
+            text="書き出し終了時にトルク保持を解除する",
+            variable=self.release_torque_hold_on_finish_var,
+        ).grid(row=1, column=5, padx=(4, 4), pady=(0, 4), sticky="w")
 
         send_frame = ttk.LabelFrame(self, text="G-code送信")
         send_frame.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
@@ -297,7 +319,9 @@ class PlotterPanel(tk.Toplevel):
 
         btn_row = ttk.Frame(send_frame)
         btn_row.grid(row=2, column=0, columnspan=6, pady=6)
-        ttk.Button(btn_row, text="外周確認", command=self._on_outline_check).pack(side="left", padx=4)
+        self.outline_check_btn = ttk.Button(btn_row, text="外周確認", command=self._on_outline_check)
+        self.outline_check_btn.pack(side="left", padx=4)
+        self._busy_widgets.append(self.outline_check_btn)
         self.send_btn = ttk.Button(btn_row, text="送信", command=self._on_send)
         self.send_btn.pack(side="left", padx=4)
         self.cancel_btn = ttk.Button(btn_row, text="キャンセル", command=self._on_cancel_send, state="disabled")
@@ -360,6 +384,26 @@ class PlotterPanel(tk.Toplevel):
             messagebox.showerror("エラー", "送信中は操作できません。先に「キャンセル」してください。")
             return True
         return False
+
+    def _set_busy(self, busy: bool) -> None:
+        """G-code送信中(外周確認含む)、GRBLとの通信を伴う他の操作を触れないようにする。
+
+        送信中はジョグ/ゼロ点設定等でも_warn_if_sendingがエラーダイアログを出して
+        弾くだけなので一見安全に見えるが、キャンセル直後はフィードホールドで
+        GRBLが応答を返さなくなり、送信スレッド側が最大60秒応答待ちでブロックする。
+        その間にユーザーがボタンを連打すると、送信スレッドの応答タイムアウト
+        ダイアログと操作エラーのダイアログが重なって表示され、Tkinterのモーダル
+        ダイアログ同士でフォーカスが奪い合いになりアプリ全体が固まって見える。
+        ボタン自体を無効化してそもそも押せなくすることでこれを防ぐ。
+        フィードホールド/再開/ソフトリセットは非常停止用の安全弁なので、
+        意図的にここでは無効化しない。
+        """
+        state = "disabled" if busy else "normal"
+        for w in self._busy_widgets:
+            try:
+                w.config(state=state)
+            except tk.TclError:
+                pass
 
     # ---- 情報表示 ----
     def _apply_status(self, parsed: dict) -> tuple[float, float, float] | None:
@@ -586,6 +630,7 @@ class PlotterPanel(tk.Toplevel):
             return
 
         lines = build_outline_check_gcode(canvas_w_mm, canvas_h_mm, feed_rate=100.0)
+        self._set_busy(True)
         try:
             conn.zero_work_origin()
             parsed = parse_status(conn.status())
@@ -602,6 +647,7 @@ class PlotterPanel(tk.Toplevel):
             messagebox.showerror("GRBLエラー", str(e))
             self.job_status_var.set(f"エラーで中断: {e}")
         finally:
+            self._set_busy(False)
             self._refresh_status()
 
     # ---- 送信 ----
@@ -664,6 +710,7 @@ class PlotterPanel(tk.Toplevel):
         self._cancel_event = cancel_event
         self.send_btn.config(state="disabled")
         self.cancel_btn.config(state="normal")
+        self._set_busy(True)
 
         def worker() -> None:
             total = len(lines)
@@ -704,7 +751,8 @@ class PlotterPanel(tk.Toplevel):
                 self.after(0, self._refresh_status)
                 self.after(0, lambda: self.send_btn.config(state="normal"))
                 self.after(0, lambda: self.cancel_btn.config(state="disabled"))
-                if completed:
+                self.after(0, lambda: self._set_busy(False))
+                if completed and self.release_torque_hold_on_finish_var.get():
                     self.after(0, self._auto_disable_torque_hold)
 
         self._send_thread = threading.Thread(target=worker, daemon=True)
