@@ -48,6 +48,56 @@ def _configure_japanese_font() -> None:
     matplotlib.rcParams["axes.unicode_minus"] = False
 
 
+class _ToolTip:
+    """ウィジェットにマウスカーソルを乗せた際に説明を表示するシンプルなツールチップ。
+
+    少し間を置いてから表示することで、単に通り過ぎただけの場合に
+    ポップアップが出ては消えるちらつきを防ぐ。
+    """
+
+    def __init__(self, widget: tk.Widget, text: str, delay_ms: int = 400) -> None:
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._after_id: str | None = None
+        self._tip: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<Destroy>", self._hide, add="+")
+
+    def _schedule(self, _event: tk.Event) -> None:
+        self._after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _show(self) -> None:
+        self._after_id = None
+        if self._tip is not None or not self.widget.winfo_exists():
+            return
+        x = self.widget.winfo_rootx() + 4
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        ttk.Label(
+            self._tip,
+            text=self.text,
+            background="#ffffe0",
+            relief=tk.SOLID,
+            borderwidth=1,
+            padding=(6, 3),
+            wraplength=280,
+            justify="left",
+            font=("", 8),
+        ).pack()
+
+    def _hide(self, _event: tk.Event | None = None) -> None:
+        if self._after_id is not None:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+
+
 class XYPDrawApp:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -256,7 +306,7 @@ class XYPDrawApp:
             row, col = divmod(n, 2)
             return grid, row, col * 2, col * 2 + 1
 
-        def add_float(key: str, label: str, default: float) -> None:
+        def add_float(key: str, label: str, default: float, tooltip: str = "") -> None:
             self.defaults[key] = float(default)
             var = tk.DoubleVar(value=float(s.get(key, default)))
             self.vars[key] = var
@@ -264,11 +314,13 @@ class XYPDrawApp:
             lbl = ttk.Label(grid, text=label, cursor="hand2", font=("", 8))
             lbl.grid(row=row, column=label_col, sticky="w", padx=(4, 3), pady=2)
             lbl.bind("<Double-Button-1>", lambda e, k=key: self._reset_param(k))
+            if tooltip:
+                _ToolTip(lbl, tooltip)
             ttk.Entry(grid, textvariable=var, width=8).grid(
                 row=row, column=entry_col, sticky="w", padx=(0, 8), pady=2
             )
 
-        def add_int(key: str, label: str, default: int) -> None:
+        def add_int(key: str, label: str, default: int, tooltip: str = "") -> None:
             self.defaults[key] = int(default)
             var = tk.IntVar(value=int(s.get(key, default)))
             self.vars[key] = var
@@ -276,11 +328,13 @@ class XYPDrawApp:
             lbl = ttk.Label(grid, text=label, cursor="hand2", font=("", 8))
             lbl.grid(row=row, column=label_col, sticky="w", padx=(4, 3), pady=2)
             lbl.bind("<Double-Button-1>", lambda e, k=key: self._reset_param(k))
+            if tooltip:
+                _ToolTip(lbl, tooltip)
             ttk.Entry(grid, textvariable=var, width=8).grid(
                 row=row, column=entry_col, sticky="w", padx=(0, 8), pady=2
             )
 
-        def add_bool(key: str, label: str, default: bool) -> None:
+        def add_bool(key: str, label: str, default: bool, tooltip: str = "") -> None:
             self.defaults[key] = bool(default)
             var = tk.BooleanVar(value=bool(s.get(key, default)))
             self.vars[key] = var
@@ -289,6 +343,8 @@ class XYPDrawApp:
             # チェックボックス自体のダブルクリックは2回トグルされてしまうため、
             # ハンドラ側でデフォルト値へ明示的に上書きして確実にリセットする。
             cb.bind("<Double-Button-1>", lambda e, k=key: self._reset_param(k))
+            if tooltip:
+                _ToolTip(cb, tooltip)
 
         reset_row = ttk.Frame(params)
         reset_row.pack(fill=tk.X, padx=6, pady=(6, 2))
@@ -305,39 +361,164 @@ class XYPDrawApp:
         ).pack(anchor="w", padx=6, pady=(0, 4))
 
         add_section("処理解像度")
-        add_int("max_long_side_px", "処理解像度上限(px)", 1600)
+        add_int(
+            "max_long_side_px",
+            "処理解像度上限(px)",
+            1600,
+            "処理時に画像の長辺をこのピクセル数以下に縮小します。\n大きいほど精細になりますが処理時間が長くなります。",
+        )
 
         add_section("前処理")
-        add_int("bilateral_d", "バイラテラル直径", 5)
-        add_float("bilateral_sigma_color", "バイラテラル色シグマ", 50.0)
-        add_float("bilateral_sigma_space", "バイラテラル空間シグマ", 50.0)
-        add_float("clahe_clip_limit", "CLAHEコントラスト上限", 2.0)
+        add_int(
+            "bilateral_d",
+            "バイラテラル直径",
+            5,
+            "バイラテラルフィルタ(ノイズを抑えつつ輪郭は保つ平滑化)の\n近傍直径(px)。大きいほど広範囲を平滑化します。",
+        )
+        add_float(
+            "bilateral_sigma_color",
+            "バイラテラル色シグマ",
+            50.0,
+            "バイラテラルフィルタで色の差をどこまで同じとみなすかの強さ。\n大きいほど色差が大きい部分まで平滑化されます。",
+        )
+        add_float(
+            "bilateral_sigma_space",
+            "バイラテラル空間シグマ",
+            50.0,
+            "バイラテラルフィルタで参照する画素の距離方向の広がり。\n大きいほど遠くの画素も平滑化に使われます。",
+        )
+        add_float(
+            "clahe_clip_limit",
+            "CLAHEコントラスト上限",
+            2.0,
+            "CLAHE(適応的ヒストグラム均等化)によるコントラスト強調の強さ。\n大きいほどコントラストが強く(輪郭が出やすく)なります。",
+        )
 
         add_section("XDoG(輪郭)")
-        add_float("xdog_sigma", "sigma", 2.0)
-        add_float("xdog_k", "k", 1.6)
-        add_float("xdog_tau", "tau", 0.98)
-        add_float("xdog_epsilon", "epsilon", -0.0001)
-        add_float("xdog_phi", "phi", 200.0)
-        add_float("xdog_threshold", "二値化しきい値(0-1)", 1.0)
-        add_int("min_object_size_px", "最小成分サイズ(px)", 1)
-        add_float("spur_factor", "スパー除去係数", 1.4)
-        add_float("merge_factor", "交差点集約係数", 0.85)
+        add_float(
+            "xdog_sigma",
+            "sigma",
+            2.0,
+            "XDoGで使う1つ目のガウシアンぼかしの標準偏差。\n大きいほど太い・大まかな輪郭が検出されます。",
+        )
+        add_float(
+            "xdog_k",
+            "k",
+            1.6,
+            "2つ目のガウシアンのsigmaに対する倍率。\n大きいほど輪郭線が太く、粗くなる傾向があります。",
+        )
+        add_float(
+            "xdog_tau",
+            "tau",
+            0.98,
+            "2つのガウシアン差分を合成する際の比率。\n1に近いほど滑らかな濃淡表現になります。",
+        )
+        add_float(
+            "xdog_epsilon",
+            "epsilon",
+            -0.0001,
+            "しきい値処理の基準値。この値以上の部分は白として扱われます。",
+        )
+        add_float(
+            "xdog_phi",
+            "phi",
+            200.0,
+            "しきい値付近の階調の急峻さ。\n大きいほど白黒の境界がくっきりします。",
+        )
+        add_float(
+            "xdog_threshold",
+            "二値化しきい値(0-1)",
+            1.0,
+            "XDoG出力を線画(白黒)に二値化する際のしきい値。\n小さいほど多くの部分が線として残ります。",
+        )
+        add_int(
+            "min_object_size_px",
+            "最小成分サイズ(px)",
+            1,
+            "この面積(px数)未満の小さな輪郭のかたまりは\nノイズとみなして除去します。",
+        )
+        add_float(
+            "spur_factor",
+            "スパー除去係数",
+            1.4,
+            "線を細線化した後にできる短いひげ状の枝(スパー)を\n除去する強さの係数。大きいほど多く除去します。",
+        )
+        add_float(
+            "merge_factor",
+            "交差点集約係数",
+            0.85,
+            "近接する線の交差点同士を1点にまとめる距離の係数。\n大きいほど広い範囲の交差点をまとめます。",
+        )
 
         add_section("ハッチング(陰影)")
-        add_bool("enable_hatching", "ハッチングを有効化", True)
-        add_float("hatch_spacing_px", "線間隔(px)", 6.0)
-        add_float("hatch_min_segment_px", "最小線分長(px)", 3.0)
-        add_int("hatch_n_levels", "階調段階数", 4)
-        add_float("hatch_dark_percentile_max", "暗い方から対象にする割合(%)", 40.0)
+        add_bool(
+            "enable_hatching",
+            "ハッチングを有効化",
+            True,
+            "画像の暗い部分を斜線(ハッチング)で陰影表現するかどうか。",
+        )
+        add_float(
+            "hatch_spacing_px",
+            "線間隔(px)",
+            6.0,
+            "ハッチング線同士の間隔。小さいほど密で濃い陰影になります。",
+        )
+        add_float(
+            "hatch_min_segment_px",
+            "最小線分長(px)",
+            3.0,
+            "この長さ(px)未満の短いハッチング線分は描画しません。",
+        )
+        add_int(
+            "hatch_n_levels",
+            "階調段階数",
+            4,
+            "陰影の濃淡をハッチングの密度で何段階に分けて表現するか。",
+        )
+        add_float(
+            "hatch_dark_percentile_max",
+            "暗い方から対象にする割合(%)",
+            40.0,
+            "画像の明るさが暗い方から何パーセントまでを\nハッチング対象にするか。",
+        )
 
         add_section("出力")
-        add_float("target_long_side_mm", "出力サイズ長辺(mm)", 200.0)
-        add_float("origin_offset_x_mm", "原点オフセットX(mm)", 0.0)
-        add_float("origin_offset_y_mm", "原点オフセットY(mm)", 0.0)
-        add_float("simplify_tolerance_mm", "単純化許容誤差(mm, 0=無効)", 0.1)
-        add_float("pen_width_mm", "プレビュー線幅(mm)", 0.3)
-        add_bool("show_travel", "ペンアップ移動線を表示", False)
+        add_float(
+            "target_long_side_mm",
+            "出力サイズ長辺(mm)",
+            200.0,
+            "SVG/G-code出力時の、画像の長辺に対応する実寸サイズ(mm)。",
+        )
+        add_float(
+            "origin_offset_x_mm",
+            "原点オフセットX(mm)",
+            0.0,
+            "出力座標の原点をX方向にずらすオフセット量(mm)。",
+        )
+        add_float(
+            "origin_offset_y_mm",
+            "原点オフセットY(mm)",
+            0.0,
+            "出力座標の原点をY方向にずらすオフセット量(mm)。",
+        )
+        add_float(
+            "simplify_tolerance_mm",
+            "単純化許容誤差(mm, 0=無効)",
+            0.1,
+            "パスの単純化(点数削減)を行う際の許容誤差(mm)。\n0にすると単純化を行いません。",
+        )
+        add_float(
+            "pen_width_mm",
+            "プレビュー線幅(mm)",
+            0.3,
+            "プレビュー表示上のペン線の太さ(mm)。\n実際の描画結果やG-codeには影響しません。",
+        )
+        add_bool(
+            "show_travel",
+            "ペンアップ移動線を表示",
+            False,
+            "ペンを上げた状態での移動経路を、プレビュー上に\n赤い点線で表示するかどうか。",
+        )
 
         add_section("ペン制御(G-code)")
         self.defaults["pen_mode"] = "z"
@@ -347,13 +528,33 @@ class XYPDrawApp:
         pen_mode_lbl = ttk.Label(pen_mode_grid, text="ペン制御方式", cursor="hand2", font=("", 8))
         pen_mode_lbl.grid(row=pen_mode_row, column=pen_mode_label_col, sticky="w", padx=(4, 3), pady=2)
         pen_mode_lbl.bind("<Double-Button-1>", lambda e: self._reset_param("pen_mode"))
+        _ToolTip(
+            pen_mode_lbl,
+            "G-code出力時のペン上げ下げの制御方式。\n"
+            "z: Z軸の上下移動 / servo: サーボモータの角度制御 / gpio: GPIO出力",
+        )
         ttk.Combobox(
             pen_mode_grid, textvariable=pen_mode_var, values=["z", "servo", "gpio"], width=6, state="readonly"
         ).grid(row=pen_mode_row, column=pen_mode_entry_col, sticky="w", padx=(0, 8), pady=2)
-        add_float("pen_up_z", "ペンアップZ(mm)", 5.0)
-        add_float("pen_down_z", "ペンダウンZ(mm)", 0.0)
-        add_float("feed_rate", "描画送り速度", 1500.0)
-        add_float("travel_feed_rate", "移動送り速度", 3000.0)
+        add_float(
+            "pen_up_z",
+            "ペンアップZ(mm)",
+            5.0,
+            "ペン制御方式が「z」の場合の、ペンを上げた(描画しない)\nときのZ座標(mm)。",
+        )
+        add_float(
+            "pen_down_z",
+            "ペンダウンZ(mm)",
+            0.0,
+            "ペン制御方式が「z」の場合の、ペンを下げた(描画する)\nときのZ座標(mm)。",
+        )
+        add_float("feed_rate", "描画送り速度", 1500.0, "ペンダウン(描画)中の移動速度。単位はG-codeの送り速度に準拠します。")
+        add_float(
+            "travel_feed_rate",
+            "移動送り速度",
+            3000.0,
+            "ペンアップ(非描画)中の移動速度。単位はG-codeの送り速度に準拠します。",
+        )
 
         # ---- 右側: プレビュー ----
         right = ttk.Frame(body)
