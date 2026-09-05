@@ -35,7 +35,9 @@ from .types import PlotJob
 
 _JP_FONT_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP"]
 _SETTINGS_PATH = Path.home() / ".xypdraw_gui_settings.json"
+_PRESETS_PATH = Path.home() / ".xypdraw_gui_presets.json"
 _IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+_NUM_PRESETS = 5
 
 
 def _configure_japanese_font() -> None:
@@ -65,6 +67,8 @@ class XYPDrawApp:
         self._plotter_panel: PlotterPanel | None = None
 
         settings = self._load_settings()
+        self.presets: list[dict | None] = self._load_presets()
+        self.preset_buttons: list[ttk.Button] = []
         self.vars: dict[str, tk.Variable] = {}
         self.defaults: dict[str, object] = {}
         self._build_ui(settings)
@@ -82,6 +86,7 @@ class XYPDrawApp:
 
     def _save_settings(self) -> None:
         data = {k: v.get() for k, v in self.vars.items()}
+        data["name"] = self.name_var.get()
         try:
             _SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
@@ -92,6 +97,80 @@ class XYPDrawApp:
         if self._plotter_panel is not None and self._plotter_panel.winfo_exists():
             self._plotter_panel.shutdown()
         self.root.destroy()
+
+    # ---- プリセットの永続化 ----
+    def _load_presets(self) -> list[dict | None]:
+        if _PRESETS_PATH.exists():
+            try:
+                data = json.loads(_PRESETS_PATH.read_text(encoding="utf-8"))
+                slots = list(data.get("presets", []))[:_NUM_PRESETS]
+                slots += [None] * (_NUM_PRESETS - len(slots))
+                return slots
+            except Exception:
+                pass
+        return [None] * _NUM_PRESETS
+
+    def _save_presets(self) -> None:
+        try:
+            _PRESETS_PATH.write_text(
+                json.dumps({"presets": self.presets}, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    def _preset_label(self, index: int) -> str:
+        slot = self.presets[index]
+        if slot and slot.get("name"):
+            return slot["name"]
+        return f"プリセット{index + 1}"
+
+    def _load_preset(self, index: int) -> None:
+        slot = self.presets[index]
+        if not slot:
+            messagebox.showinfo("XYPDraw", f"プリセット{index + 1}には何も保存されていません。")
+            return
+        for key, value in slot.get("values", {}).items():
+            if key in self.vars:
+                try:
+                    self.vars[key].set(value)
+                except tk.TclError:
+                    pass
+        self.name_var.set(slot.get("name", ""))
+        self.status_var.set(f"プリセット{index + 1}「{self._preset_label(index)}」を読み込みました。")
+
+    def _on_save_preset(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("プリセットに保存")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        ttk.Label(dialog, text="保存先のプリセットを選択してください:", padding=(10, 10, 10, 4)).pack(
+            anchor="w"
+        )
+        for i in range(_NUM_PRESETS):
+            slot = self.presets[i]
+            label = f"{i + 1}: {slot['name'] if slot and slot.get('name') else '(空)'}"
+            ttk.Button(
+                dialog, text=label, width=32, command=lambda i=i, d=dialog: self._save_to_preset(i, d)
+            ).pack(fill=tk.X, padx=10, pady=2)
+        ttk.Button(dialog, text="キャンセル", command=dialog.destroy).pack(pady=(6, 10))
+
+    def _save_to_preset(self, index: int, dialog: tk.Toplevel) -> None:
+        existing = self.presets[index]
+        if existing is not None:
+            if not messagebox.askyesno(
+                "XYPDraw",
+                f"プリセット{index + 1}「{existing.get('name', '')}」を上書きしますか?",
+                parent=dialog,
+            ):
+                return
+        name = self.name_var.get().strip() or f"プリセット{index + 1}"
+        values = {k: v.get() for k, v in self.vars.items()}
+        self.presets[index] = {"name": name, "values": values}
+        self._save_presets()
+        self.preset_buttons[index].config(text=self._preset_label(index))
+        dialog.destroy()
+        self.status_var.set(f"プリセット{index + 1}「{name}」に保存しました。")
 
     # ---- デフォルト値へのリセット ----
     def _reset_param(self, key: str) -> None:
@@ -115,6 +194,20 @@ class XYPDrawApp:
         path_entry.pack(side=tk.LEFT, padx=4)
         ttk.Button(top, text="参照...", command=self._browse_image).pack(side=tk.LEFT, padx=4)
         self._dnd_targets: list[tk.Widget] = [top, path_entry]
+
+        preset_bar = ttk.Frame(self.root, padding=(8, 0, 8, 8))
+        preset_bar.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(preset_bar, text="設定名:").pack(side=tk.LEFT)
+        self.name_var = tk.StringVar(value=s.get("name", ""))
+        ttk.Entry(preset_bar, textvariable=self.name_var, width=16).pack(side=tk.LEFT, padx=(2, 12))
+        ttk.Label(preset_bar, text="プリセット:").pack(side=tk.LEFT)
+        for i in range(_NUM_PRESETS):
+            btn = ttk.Button(preset_bar, text=self._preset_label(i), command=lambda i=i: self._load_preset(i))
+            btn.pack(side=tk.LEFT, padx=2)
+            self.preset_buttons.append(btn)
+        ttk.Button(preset_bar, text="現在の設定を保存...", command=self._on_save_preset).pack(
+            side=tk.LEFT, padx=(10, 0)
+        )
 
         body = ttk.Frame(self.root)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
